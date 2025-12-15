@@ -123,6 +123,8 @@ def run_tool(tool_cmd, config):
 
         proc.wait()
     finally:
+        # Turn off LED
+        subprocess.run([LED_SCRIPT, "o"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Restore original terminal settings (if they were saved)
         if old_settings is not None:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)

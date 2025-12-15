@@ -5,7 +5,10 @@
 patterns:
   # Waiting state (RED LED) - when Claude is waiting for user input
   waiting:
-    - "›"  # Claude's input prompt
+    - ">\xa0"  # Claude's main input prompt (> followed by non-breaking space)
+    - "❯"  # Selection arrow in menus
+    - "\\? for shortcuts"  # Appears in Claude's status line when waiting
+    - "Esc to cancel"  # Appears in selection menus
     - "Press .* to"
     - "Select an option"
     - "\\(y/n\\)"
@@ -13,6 +16,8 @@ patterns:
     - "\\[Y/n\\]"
     - "Enter your choice"
     - "Waiting for"
+    - "Type your message"
+    - "Type here to tell Claude"
 
   # Thinking state (YELLOW LED) - when Claude is processing/thinking
   thinking:

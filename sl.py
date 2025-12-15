@@ -109,13 +109,14 @@ def run_tool(tool_cmd, config):
                     sys.stderr.write(f"\n[DEBUG] Buffer: {repr(text[-200:])}\n")
                     sys.stderr.flush()
 
-                # Check waiting patterns
-                if any(re.search(p, text) for p in config.get("patterns", {}).get("waiting", [])):
+                # Check waiting patterns (look at last 200 chars for better prompt detection)
+                text_tail = text[-200:]
+                if any(re.search(p, text_tail, re.MULTILINE) for p in config.get("patterns", {}).get("waiting", [])):
                     if os.getenv("DEBUG_SL"):
                         sys.stderr.write("[DEBUG] State: WAITING\n")
                     update_state("waiting")
                 # Check thinking patterns
-                elif any(re.search(p, text) for p in config.get("patterns", {}).get("thinking", [])):
+                elif any(re.search(p, text, re.MULTILINE) for p in config.get("patterns", {}).get("thinking", [])):
                     if os.getenv("DEBUG_SL"):
                         sys.stderr.write("[DEBUG] State: THINKING\n")
                     update_state("thinking")

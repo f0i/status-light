@@ -1,0 +1,64 @@
+# Default configuration for sl.py
+#
+# This configuration is used when no tool-specific config exists
+# Provides generic patterns for common command-line tools
+
+patterns:
+  # Waiting state (RED LED) - triggered by these patterns
+  waiting:
+    - "wait"
+    - "Wait"
+    - "WAIT"
+    - "waiting"
+    - "Waiting"
+    - "pending"
+    - "Pending"
+    - "blocked"
+    - "Blocked"
+    - "paused"
+    - "Paused"
+    - "input required"
+    - "Press .* key"
+    - "confirmation"
+    - "Are you sure"
+    - "\\(y/n\\)"
+    - "\\[y/N\\]"
+    - "\\[Y/n\\]"
+
+  # Thinking state (YELLOW LED) - triggered by these patterns
+  thinking:
+    - "build"
+    - "Build"
+    - "BUILD"
+    - "compil"
+    - "Compil"
+    - "process"
+    - "Process"
+    - "PROCESS"
+    - "running"
+    - "Running"
+    - "RUNNING"
+    - "executing"
+    - "Executing"
+    - "analyz"
+    - "Analyz"
+    - "testing"
+    - "Testing"
+    - "TESTING"
+    - "install"
+    - "Install"
+    - "download"
+    - "Download"
+    - "generating"
+    - "Generating"
+    - "creating"
+    - "Creating"
+    - "loading"
+    - "Loading"
+    - "\\.\\.\\."
+    - "\\[.*%\\]"
+    - "\\d+%"
+
+# Idle threshold in milliseconds
+# If no output is received for this duration, switch to idle state (BLUE LED)
+idle_threshold_ms: 500

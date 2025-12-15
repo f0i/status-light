@@ -1,0 +1,32 @@
+# Configuration for test_script.sh
+#
+# This configuration defines patterns that trigger different LED states
+# when monitoring test_script.sh through sl.py
+
+patterns:
+  # Waiting state (RED LED) - triggered by these patterns
+  waiting:
+    - "\\[WAIT\\]"
+    - "Waiting for"
+    - "Checking availability"
+    - "confirmation"
+
+  # Thinking state (YELLOW LED) - triggered by these patterns
+  thinking:
+    - "\\[BUILD\\]"
+    - "\\[TEST\\]"
+    - "\\[INFO\\]"
+    - "\\[DEPLOY\\]"
+    - "Processing"
+    - "Analyzing"
+    - "Compiling"
+    - "Running"
+    - "Executing"
+    - "Generating"
+    - "Performing"
+    - "Linking"
+    - "Cleaning up"
+
+# Idle threshold in milliseconds
+# If no output is received for this duration, switch to idle state (BLUE LED)
+idle_threshold_ms: 500

@@ -104,24 +104,37 @@ def run_tool(tool_cmd, config):
 
                 text = buffer.decode(errors="ignore")
 
-                # Debug: Log buffer content to stderr if DEBUG env var is set
-                if os.getenv("DEBUG_SL"):
-                    sys.stderr.write(f"\n[DEBUG] Buffer: {repr(text[-200:])}\n")
-                    sys.stderr.flush()
-
                 # Check patterns on recent output (last 300 chars) to avoid stale matches
                 recent_text = text[-300:]
 
+                # Debug: Log buffer content to stderr if DEBUG env var is set
+                if os.getenv("DEBUG_SL"):
+                    sys.stderr.write(f"\n[DEBUG] Buffer: {repr(recent_text)}\n")
+                    sys.stderr.flush()
+
                 # Check waiting patterns FIRST - they're more specific to UI state
-                if any(re.search(p, recent_text, re.MULTILINE) for p in config.get("patterns", {}).get("waiting", [])):
+                waiting_match = None
+                for p in config.get("patterns", {}).get("waiting", []):
+                    if re.search(p, recent_text, re.MULTILINE):
+                        waiting_match = p
+                        break
+
+                if waiting_match:
                     if os.getenv("DEBUG_SL"):
-                        sys.stderr.write("[DEBUG] State: WAITING\n")
+                        sys.stderr.write(f"[DEBUG] State: WAITING (matched: {waiting_match})\n")
                     update_state("waiting")
-                # Check thinking patterns (only if not waiting)
-                elif any(re.search(p, recent_text, re.MULTILINE) for p in config.get("patterns", {}).get("thinking", [])):
-                    if os.getenv("DEBUG_SL"):
-                        sys.stderr.write("[DEBUG] State: THINKING\n")
-                    update_state("thinking")
+                else:
+                    # Check thinking patterns (only if not waiting)
+                    thinking_match = None
+                    for p in config.get("patterns", {}).get("thinking", []):
+                        if re.search(p, recent_text, re.MULTILINE):
+                            thinking_match = p
+                            break
+
+                    if thinking_match:
+                        if os.getenv("DEBUG_SL"):
+                            sys.stderr.write(f"[DEBUG] State: THINKING (matched: {thinking_match})\n")
+                        update_state("thinking")
                 buffer = buffer[-1024:]  # keep last 1k bytes
 
             # no new data, check for idle (but don't go idle if we're in waiting state)

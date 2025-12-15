@@ -21,14 +21,20 @@ patterns:
 
   # Thinking state (YELLOW LED) - when Claude is processing/thinking
   thinking:
-    - "●\\s+\\x1b\\[1m"  # Tool execution marker (● followed by bold ANSI code for tool name)
+    - "esc.*to interrupt"  # "(esc to interrupt)" appears while processing
+    - "[✶✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆❇❈❉❊❋]"  # Star/pulse characters (includes ✻)
+    - "●"  # Any tool marker (simpler pattern)
     - "\\x1b\\[96m●\\x1b\\[39m"  # Cyan colored tool marker
+    - "\\x1b\\[97m●\\x1b\\[39m"  # White tool marker
+    - "\\x1b\\[37m●\\x1b\\[39m"  # Gray tool marker
     - "Germinating"
     - "Thought for \\d+s"  # "Thought for 1s", "Thought for 2s", etc
     - "ctrl\\+o to expand"  # Appears in collapsed sections during tool output
     - "ctrl\\+o to show thinking"
-    - "⎿\\s+\\xa0"  # Tool output tree character followed by output
+    - "⎿"  # Tool output tree character
     - "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]"  # Braille spinner patterns
+    - "I'll help"  # Common Claude response starts
+    - "Let me"  # Common Claude response starts
 
 # Idle threshold in milliseconds
 # Timeout before switching to idle when no output is received

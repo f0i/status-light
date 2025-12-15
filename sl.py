@@ -17,9 +17,9 @@ CONFIG_DIR = os.path.join(os.path.dirname(__file__), "configs")
 MIN_STATE_DURATION = 0.2  # seconds to avoid flicker
 
 STATE_TO_CMD = {
-    "idle": ["a", "0", "0", "255"],        # blue
-    "thinking": ["a", "255", "255", "0"],  # yellow
-    "waiting": ["a", "255", "0", "0"],     # red
+    "idle": ["a", "0", "0", "0", "255"],        # blue
+    "thinking": ["a", "0", "255", "255", "0"],  # yellow
+    "waiting": ["a", "0", "100", "0", "0"],     # red
 }
 
 LED_SCRIPT = os.path.join(os.path.dirname(__file__), "led")
@@ -41,7 +41,7 @@ def load_config(tool_name):
 def set_led(state):
     args = STATE_TO_CMD.get(state, STATE_TO_CMD["idle"])
     cmd = [LED_SCRIPT] + args
-    subprocess.run(cmd)
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 # ----------------------------
 # Core PTY wrapper
@@ -62,19 +62,25 @@ def run_tool(tool_cmd, config):
     proc = subprocess.Popen(tool_cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True)
     os.close(slave_fd)
 
-    # Save original terminal settings and set to raw mode
-    old_settings = termios.tcgetattr(sys.stdin)
-    try:
+    # Save original terminal settings and set to raw mode (only if stdin is a TTY)
+    old_settings = None
+    if sys.stdin.isatty():
+        old_settings = termios.tcgetattr(sys.stdin)
         tty.setraw(sys.stdin.fileno())
 
+    try:
         buffer = b""
         idle_timer = time.time()
 
         while True:
-            rlist, _, _ = select.select([master_fd, sys.stdin], [], [], 0.1)
+            # Only monitor stdin if it's a TTY
+            if old_settings is not None:
+                rlist, _, _ = select.select([master_fd, sys.stdin], [], [], 0.1)
+            else:
+                rlist, _, _ = select.select([master_fd], [], [], 0.1)
 
-            # Handle input from stdin -> forward to subprocess
-            if sys.stdin in rlist:
+            # Handle input from stdin -> forward to subprocess (only if stdin is TTY)
+            if old_settings is not None and sys.stdin in rlist:
                 try:
                     data = os.read(sys.stdin.fileno(), 1024)
                 except OSError:
@@ -117,8 +123,9 @@ def run_tool(tool_cmd, config):
 
         proc.wait()
     finally:
-        # Restore original terminal settings
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+        # Restore original terminal settings (if they were saved)
+        if old_settings is not None:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
 # ----------------------------
 # CLI Entry

@@ -3,48 +3,33 @@
 # Patterns specific to Claude Code's output
 
 patterns:
-  # Waiting state (RED LED) - when Claude is waiting for user input
+  # Waiting state (RED LED) - when user action/decision is required to continue
   waiting:
-    - ">\xa0"  # Claude's main input prompt (> followed by non-breaking space)
-    - "❯"  # Selection arrow in menus
-    - "\\? for shortcuts"  # Appears in Claude's status line when waiting
+    - "Do you want to proceed\\?"  # Explicit proceed question
+    - "❯"  # Selection arrow in decision menus
     - "Esc to cancel"  # Appears in selection menus
-    - "Press .* to"
-    - "Select an option"
+    - "\\d+\\.\\s+(Yes|No)"  # Numbered options like "1. Yes", "2. No"
+    - "Type here to tell Claude what to do differently"  # Alternative input option
+    - "shift\\+tab"  # Appears in selection prompts
     - "\\(y/n\\)"
     - "\\[y/N\\]"
     - "\\[Y/n\\]"
+    - "Select an option"
     - "Enter your choice"
-    - "Waiting for"
-    - "Type your message"
-    - "Type here to tell Claude"
+    - "Waiting for confirmation"
+    - "Are you sure"
 
   # Thinking state (YELLOW LED) - when Claude is processing/thinking
   thinking:
-    - "Thinking"
-    - "Reading"
-    - "Searching"
-    - "Analyzing"
-    - "Processing"
-    - "Generating"
-    - "Writing"
-    - "Editing"
-    - "Running"
-    - "Executing"
-    - "Calling"
-    - "Invoking"
-    - "└─"  # Tool use indicators
-    - "├─"
-    - "▸"   # Expansion arrows
-    - "🔧"  # Tool emoji
-    - "⚙"
-    - "\\.{3}"  # Ellipsis
-    - "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]"  # Pulsing/spinner indicators (braille patterns)
-    - "[⣾⣽⣻⢿⡿⣟⣯⣷]"  # More braille spinner patterns
-    - "[◐◓◑◒]"  # Circle quadrants
-    - "[✶✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆❇❈❉❊❋]"  # Star-like characters
-    - "[▁▂▃▄▅▆▇█]"  # Vertical bars
+    - "●\\s+\\x1b\\[1m"  # Tool execution marker (● followed by bold ANSI code for tool name)
+    - "\\x1b\\[96m●\\x1b\\[39m"  # Cyan colored tool marker
+    - "Germinating"
+    - "Thought for \\d+s"  # "Thought for 1s", "Thought for 2s", etc
+    - "ctrl\\+o to expand"  # Appears in collapsed sections during tool output
+    - "ctrl\\+o to show thinking"
+    - "⎿\\s+\\xa0"  # Tool output tree character followed by output
+    - "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]"  # Braille spinner patterns
 
 # Idle threshold in milliseconds
-# Claude often has brief pauses, so set a bit higher
-idle_threshold_ms: 800
+# Timeout before switching to idle when no output is received
+idle_threshold_ms: 300

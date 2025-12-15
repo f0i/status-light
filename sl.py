@@ -109,23 +109,27 @@ def run_tool(tool_cmd, config):
                     sys.stderr.write(f"\n[DEBUG] Buffer: {repr(text[-200:])}\n")
                     sys.stderr.flush()
 
-                # Check waiting patterns (look at last 200 chars for better prompt detection)
-                text_tail = text[-200:]
-                if any(re.search(p, text_tail, re.MULTILINE) for p in config.get("patterns", {}).get("waiting", [])):
+                # Check patterns on recent output (last 300 chars) to avoid stale matches
+                recent_text = text[-300:]
+
+                # Check waiting patterns FIRST - they're more specific to UI state
+                if any(re.search(p, recent_text, re.MULTILINE) for p in config.get("patterns", {}).get("waiting", [])):
                     if os.getenv("DEBUG_SL"):
                         sys.stderr.write("[DEBUG] State: WAITING\n")
                     update_state("waiting")
-                # Check thinking patterns
-                elif any(re.search(p, text, re.MULTILINE) for p in config.get("patterns", {}).get("thinking", [])):
+                # Check thinking patterns (only if not waiting)
+                elif any(re.search(p, recent_text, re.MULTILINE) for p in config.get("patterns", {}).get("thinking", [])):
                     if os.getenv("DEBUG_SL"):
                         sys.stderr.write("[DEBUG] State: THINKING\n")
                     update_state("thinking")
                 buffer = buffer[-1024:]  # keep last 1k bytes
 
-            # no new data, check for idle
+            # no new data, check for idle (but don't go idle if we're in waiting state)
             if not rlist:
                 if (time.time() - idle_timer)*1000 > config.get("idle_threshold_ms", 500):
-                    update_state("idle")
+                    # Only switch to idle if we're not in a waiting state
+                    if last_state != "waiting":
+                        update_state("idle")
 
             # check if process exited
             if proc.poll() is not None:

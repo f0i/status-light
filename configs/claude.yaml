@@ -1,0 +1,45 @@
+# Configuration for Claude Code
+#
+# Patterns specific to Claude Code's output
+
+patterns:
+  # Waiting state (RED LED) - when Claude is waiting for user input
+  waiting:
+    - "›"  # Claude's input prompt
+    - "Press .* to"
+    - "Select an option"
+    - "\\(y/n\\)"
+    - "\\[y/N\\]"
+    - "\\[Y/n\\]"
+    - "Enter your choice"
+    - "Waiting for"
+
+  # Thinking state (YELLOW LED) - when Claude is processing/thinking
+  thinking:
+    - "Thinking"
+    - "Reading"
+    - "Searching"
+    - "Analyzing"
+    - "Processing"
+    - "Generating"
+    - "Writing"
+    - "Editing"
+    - "Running"
+    - "Executing"
+    - "Calling"
+    - "Invoking"
+    - "└─"  # Tool use indicators
+    - "├─"
+    - "▸"   # Expansion arrows
+    - "🔧"  # Tool emoji
+    - "⚙"
+    - "\\.{3}"  # Ellipsis
+    - "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]"  # Pulsing/spinner indicators (braille patterns)
+    - "[⣾⣽⣻⢿⡿⣟⣯⣷]"  # More braille spinner patterns
+    - "[◐◓◑◒]"  # Circle quadrants
+    - "[✶✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆❇❈❉❊❋]"  # Star-like characters
+    - "[▁▂▃▄▅▆▇█]"  # Vertical bars
+
+# Idle threshold in milliseconds
+# Claude often has brief pauses, so set a bit higher
+idle_threshold_ms: 800

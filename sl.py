@@ -103,11 +103,21 @@ def run_tool(tool_cmd, config):
                 idle_timer = time.time()
 
                 text = buffer.decode(errors="ignore")
+
+                # Debug: Log buffer content to stderr if DEBUG env var is set
+                if os.getenv("DEBUG_SL"):
+                    sys.stderr.write(f"\n[DEBUG] Buffer: {repr(text[-200:])}\n")
+                    sys.stderr.flush()
+
                 # Check waiting patterns
                 if any(re.search(p, text) for p in config.get("patterns", {}).get("waiting", [])):
+                    if os.getenv("DEBUG_SL"):
+                        sys.stderr.write("[DEBUG] State: WAITING\n")
                     update_state("waiting")
                 # Check thinking patterns
                 elif any(re.search(p, text) for p in config.get("patterns", {}).get("thinking", [])):
+                    if os.getenv("DEBUG_SL"):
+                        sys.stderr.write("[DEBUG] State: THINKING\n")
                     update_state("thinking")
                 buffer = buffer[-1024:]  # keep last 1k bytes
 

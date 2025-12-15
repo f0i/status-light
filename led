@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+#
+#
+
+serial="/dev/ttyACM0"
+
+cmd=${1:-a}
+
+led=${2:-0}
+
+r=${3:-255}
+g=${4:-0}
+b=${5:-0}
+gamma=${6:-255}
+
+
+case "$cmd" in
+  a|all)
+    printf "a %03d %03d %03d %03d\n" $r $g $b $gamma
+    printf "a %03d %03d %03d %03d\n" $r $g $b $gamma > $serial
+    ;;
+  o|off)
+    echo "o"
+    echo "o" > $serial
+    ;;
+  c)
+    printf "c %02d %03d %03d %03d %03d\n" $led $r $g $b $gamma
+    printf "c %02d %03d %03d %03d %03d\n" $led $r $g $b $gamma > $serial
+    ;;
+  p*)
+    echo "p"
+    echo "p" > $serial
+    ;;
+  *)
+    echo "??? $cmd $*"
+    ;;
+esac
+

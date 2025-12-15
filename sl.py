@@ -7,6 +7,8 @@ import sys
 import re
 import time
 import yaml
+import tty
+import termios
 
 # ----------------------------
 # Configuration
@@ -60,42 +62,63 @@ def run_tool(tool_cmd, config):
     proc = subprocess.Popen(tool_cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True)
     os.close(slave_fd)
 
-    buffer = b""
-    idle_timer = time.time()
+    # Save original terminal settings and set to raw mode
+    old_settings = termios.tcgetattr(sys.stdin)
+    try:
+        tty.setraw(sys.stdin.fileno())
 
-    while True:
-        rlist, _, _ = select.select([master_fd], [], [], 0.1)
-        if master_fd in rlist:
-            try:
-                data = os.read(master_fd, 1024)
-            except OSError:
-                break
-            if not data:
-                break
-            sys.stdout.buffer.write(data)
-            sys.stdout.buffer.flush()
-            buffer += data
-            idle_timer = time.time()
+        buffer = b""
+        idle_timer = time.time()
 
-            text = buffer.decode(errors="ignore")
-            # Check waiting patterns
-            if any(re.search(p, text) for p in config.get("patterns", {}).get("waiting", [])):
-                update_state("waiting")
-            # Check thinking patterns
-            elif any(re.search(p, text) for p in config.get("patterns", {}).get("thinking", [])):
-                update_state("thinking")
-            buffer = buffer[-1024:]  # keep last 1k bytes
-        else:
-            # no output, check for idle
-            if (time.time() - idle_timer)*1000 > config.get("idle_threshold_ms", 500):
+        while True:
+            rlist, _, _ = select.select([master_fd, sys.stdin], [], [], 0.1)
+
+            # Handle input from stdin -> forward to subprocess
+            if sys.stdin in rlist:
+                try:
+                    data = os.read(sys.stdin.fileno(), 1024)
+                except OSError:
+                    break
+                if not data:
+                    break
+                os.write(master_fd, data)
+
+            # Handle output from subprocess -> forward to stdout
+            if master_fd in rlist:
+                try:
+                    data = os.read(master_fd, 1024)
+                except OSError:
+                    break
+                if not data:
+                    break
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+                buffer += data
+                idle_timer = time.time()
+
+                text = buffer.decode(errors="ignore")
+                # Check waiting patterns
+                if any(re.search(p, text) for p in config.get("patterns", {}).get("waiting", [])):
+                    update_state("waiting")
+                # Check thinking patterns
+                elif any(re.search(p, text) for p in config.get("patterns", {}).get("thinking", [])):
+                    update_state("thinking")
+                buffer = buffer[-1024:]  # keep last 1k bytes
+
+            # no new data, check for idle
+            if not rlist:
+                if (time.time() - idle_timer)*1000 > config.get("idle_threshold_ms", 500):
+                    update_state("idle")
+
+            # check if process exited
+            if proc.poll() is not None:
                 update_state("idle")
+                break
 
-        # check if process exited
-        if proc.poll() is not None:
-            update_state("idle")
-            break
-
-    proc.wait()
+        proc.wait()
+    finally:
+        # Restore original terminal settings
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
 # ----------------------------
 # CLI Entry

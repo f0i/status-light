@@ -31,14 +31,36 @@ const Config = struct {
     };
 };
 
+const DebugLogger = struct {
+    file: ?fs.File,
+
+    fn init() DebugLogger {
+        const debug_env = std.posix.getenv("DEBUG_SL");
+        if (debug_env == null) return .{ .file = null };
+
+        const file = fs.cwd().createFile("debug.log", .{ .truncate = true }) catch null;
+        return .{ .file = file };
+    }
+
+    fn deinit(self: *DebugLogger) void {
+        if (self.file) |f| {
+            f.close();
+        }
+    }
+
+    fn log(self: *const DebugLogger, comptime fmt: []const u8, args: anytype) void {
+        if (self.file) |f| {
+            f.writer().print(fmt, args) catch {};
+        }
+    }
+};
+
 const LEDController = struct {
     fd: ?posix.fd_t,
-    debug_mode: bool,
 
     fn init() LEDController {
         const fd = posix.open("/dev/ttyACM0", .{ .ACCMODE = .WRONLY }, 0) catch null;
-        const debug_env = std.posix.getenv("DEBUG_SL");
-        return .{ .fd = fd, .debug_mode = debug_env != null };
+        return .{ .fd = fd };
     }
 
     fn deinit(self: *LEDController) void {
@@ -47,7 +69,7 @@ const LEDController = struct {
         }
     }
 
-    fn setState(self: *LEDController, state: State) void {
+    fn setState(self: *LEDController, state: State, logger: *const DebugLogger) void {
         // Format matches led script output: "a <r> <g> <b> <gamma>" (4 values)
         // led script uses: printf "a %03d %03d %03d %03d\n" $r $g $b $gamma
         const cmd = switch (state) {
@@ -56,17 +78,12 @@ const LEDController = struct {
             .waiting => "a 100 000 000 255\n", // Dim Red: R=100, G=0, B=0, gamma=255
         };
 
-        if (self.debug_mode) {
-            std.debug.print("[DEBUG] LED State: {s} -> {s}", .{ @tagName(state), cmd });
-        }
+        logger.log("[DEBUG] LED State: {s} -> {s}", .{ @tagName(state), cmd });
 
         if (self.fd) |fd| {
             _ = posix.write(fd, cmd) catch |err| {
-                std.debug.print("LED write error: {}\n", .{err});
+                logger.log("LED write error: {}\n", .{err});
             };
-        } else if (!self.debug_mode) {
-            // No LED hardware, print to stdout for debugging (unless already in debug mode)
-            std.debug.print("{s}", .{cmd});
         }
     }
 };
@@ -117,10 +134,8 @@ const PatternMatcher = struct {
     waiting_patterns: []CompiledPattern,
     thinking_patterns: []CompiledPattern,
     allocator: std.mem.Allocator,
-    debug_mode: bool,
 
     fn init(allocator: std.mem.Allocator, config: Config) !PatternMatcher {
-        const debug_env = std.posix.getenv("DEBUG_SL");
         var waiting = try allocator.alloc(CompiledPattern, config.patterns.waiting.len);
         errdefer allocator.free(waiting);
 
@@ -143,7 +158,6 @@ const PatternMatcher = struct {
             .waiting_patterns = waiting,
             .thinking_patterns = thinking,
             .allocator = allocator,
-            .debug_mode = debug_env != null,
         };
     }
 
@@ -154,23 +168,31 @@ const PatternMatcher = struct {
         self.allocator.free(self.thinking_patterns);
     }
 
-    fn matchState(self: *const PatternMatcher, text: []const u8) !?State {
-        // Check waiting patterns first (higher priority)
+    fn matchState(self: *const PatternMatcher, full_buffer: []const u8, logger: *const DebugLogger) !?State {
+        // Get tail (last ~10 lines) for checking UI state indicators (waiting patterns)
+        // Waiting patterns should only match on recent output, not old buffered text
+        const tail_start = blk: {
+            var count: usize = 0;
+            var i: usize = full_buffer.len;
+            while (i > 0 and count < 10) : (i -= 1) {
+                if (full_buffer[i - 1] == '\n') count += 1;
+            }
+            break :blk i;
+        };
+        const tail = full_buffer[tail_start..];
+
+        // Check waiting patterns on tail only (last ~10 lines) - these are UI state indicators
         for (self.waiting_patterns) |*pattern| {
-            if (try pattern.matches(text)) {
-                if (self.debug_mode) {
-                    std.debug.print("[DEBUG] State: WAITING (matched: {s})\n", .{pattern.pattern});
-                }
+            if (try pattern.matches(tail)) {
+                logger.log("[DEBUG] State: WAITING (matched: {s} in tail)\n", .{pattern.pattern});
                 return .waiting;
             }
         }
 
-        // Check thinking patterns
+        // Check thinking patterns on full buffer - thinking indicators can appear anywhere
         for (self.thinking_patterns) |*pattern| {
-            if (try pattern.matches(text)) {
-                if (self.debug_mode) {
-                    std.debug.print("[DEBUG] State: THINKING (matched: {s})\n", .{pattern.pattern});
-                }
+            if (try pattern.matches(full_buffer)) {
+                logger.log("[DEBUG] State: THINKING (matched: {s} in full buffer)\n", .{pattern.pattern});
                 return .thinking;
             }
         }
@@ -277,6 +299,9 @@ pub fn main() !void {
     var config_result = try loadConfig(allocator, tool_name);
     defer config_result.deinit();
 
+    var logger = DebugLogger.init();
+    defer logger.deinit();
+
     var matcher = try PatternMatcher.init(allocator, config_result.config);
     defer matcher.deinit();
 
@@ -346,7 +371,7 @@ pub fn main() !void {
     var last_state_change = std.time.milliTimestamp();
     const min_state_duration_ms = 200;
 
-    led.setState(current_state);
+    led.setState(current_state, &logger);
 
     // Setup poll fds - only monitor stdin if it's a TTY
     var poll_fds: [2]posix.pollfd = undefined;
@@ -380,35 +405,35 @@ pub fn main() !void {
                 last_output_time = std.time.milliTimestamp();
 
                 // Debug: Log buffer content
-                if (matcher.debug_mode) {
+                if (logger.file != null) {
                     const text = rolling_buffer.items;
                     // Show last 200 bytes of buffer for debugging
                     const start_idx = if (text.len > 200) text.len - 200 else 0;
-                    std.debug.print("\n[DEBUG] Buffer (last {d} bytes): ", .{text.len - start_idx});
+                    logger.log("\n[DEBUG] Buffer (last {d} bytes): ", .{text.len - start_idx});
                     for (text[start_idx..]) |ch| {
                         if (ch >= 32 and ch <= 126) {
-                            std.debug.print("{c}", .{ch});
+                            logger.log("{c}", .{ch});
                         } else if (ch == '\n') {
-                            std.debug.print("\\n", .{});
+                            logger.log("\\n", .{});
                         } else if (ch == '\r') {
-                            std.debug.print("\\r", .{});
+                            logger.log("\\r", .{});
                         } else if (ch == '\t') {
-                            std.debug.print("\\t", .{});
+                            logger.log("\\t", .{});
                         } else {
-                            std.debug.print("\\x{x:0>2}", .{ch});
+                            logger.log("\\x{x:0>2}", .{ch});
                         }
                     }
-                    std.debug.print("\n", .{});
+                    logger.log("\n", .{});
                 }
 
                 // Pattern matching
                 const text = rolling_buffer.items;
-                if (try matcher.matchState(text)) |new_state| {
+                if (try matcher.matchState(text, &logger)) |new_state| {
                     const now = std.time.milliTimestamp();
                     if (new_state != current_state and (now - last_state_change) >= min_state_duration_ms) {
                         current_state = new_state;
                         last_state_change = now;
-                        led.setState(current_state);
+                        led.setState(current_state, &logger);
                     }
                 }
             }
@@ -436,13 +461,30 @@ pub fn main() !void {
 
         // Check idle timeout
         const now = std.time.milliTimestamp();
+        const time_since_output = now - last_output_time;
+        const time_in_current_state = now - last_state_change;
+
+        if (logger.file != null and current_state != .idle and time_since_output > 100) {
+            logger.log("[DEBUG] Idle check: state={s}, time_since_output={d}ms (threshold={d}ms), time_in_state={d}ms (min={d}ms)\n", .{
+                @tagName(current_state),
+                time_since_output,
+                config_result.config.idle_threshold_ms,
+                time_in_current_state,
+                min_state_duration_ms,
+            });
+        }
+
         if (current_state != .idle and
-            (now - last_output_time) > @as(i64, @intCast(config_result.config.idle_threshold_ms)) and
-            (now - last_state_change) >= min_state_duration_ms)
+            time_since_output > @as(i64, @intCast(config_result.config.idle_threshold_ms)) and
+            time_in_current_state >= min_state_duration_ms)
         {
+            logger.log("[DEBUG] Going idle: time_since_output={d}ms > threshold={d}ms\n", .{
+                time_since_output,
+                config_result.config.idle_threshold_ms,
+            });
             current_state = .idle;
             last_state_change = now;
-            led.setState(current_state);
+            led.setState(current_state, &logger);
         }
     }
 
@@ -451,7 +493,7 @@ pub fn main() !void {
     const exit_code = posix.W.EXITSTATUS(result.status);
 
     // Turn off LED when done
-    led.setState(.idle);
+    led.setState(.idle, &logger);
 
     // Restore terminal before exiting (only if we set it to raw mode)
     if (stdin_is_tty) {

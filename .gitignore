@@ -45,3 +45,10 @@ Thumbs.db
 
 # Logs
 debug.log
+
+# Zig build artifacts
+.zig-cache/
+zig-out/
+
+# Claude Code
+.claude/

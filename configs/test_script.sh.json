@@ -1,0 +1,26 @@
+{
+  "patterns": {
+    "waiting": [
+      "\\[WAIT\\]",
+      "Waiting for",
+      "Checking availability",
+      "confirmation"
+    ],
+    "thinking": [
+      "\\[BUILD\\]",
+      "\\[TEST\\]",
+      "\\[INFO\\]",
+      "\\[DEPLOY\\]",
+      "Processing",
+      "Analyzing",
+      "Compiling",
+      "Running",
+      "Executing",
+      "Generating",
+      "Performing",
+      "Linking",
+      "Cleaning up"
+    ]
+  },
+  "idle_threshold_ms": 500
+}

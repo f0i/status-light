@@ -104,18 +104,20 @@ def run_tool(tool_cmd, config):
 
                 text = buffer.decode(errors="ignore")
 
-                # Check patterns on recent output (last 300 chars) to avoid stale matches
-                recent_text = text[-300:]
+                # Get last N lines for checking UI state (prompt area)
+                lines = text.split('\n')
+                tail_lines = '\n'.join(lines[-10:])  # Last 10 lines for prompt/UI checks
+                full_buffer = text  # Entire buffer for thinking indicators
 
                 # Debug: Log buffer content to stderr if DEBUG env var is set
                 if os.getenv("DEBUG_SL"):
-                    sys.stderr.write(f"\n[DEBUG] Buffer: {repr(recent_text)}\n")
+                    sys.stderr.write(f"\n[DEBUG] Tail: {repr(tail_lines[-200:])}\n")
                     sys.stderr.flush()
 
-                # Check waiting patterns FIRST - they're more specific to UI state
+                # Check waiting patterns on tail (last lines) - these are UI state indicators
                 waiting_match = None
                 for p in config.get("patterns", {}).get("waiting", []):
-                    if re.search(p, recent_text, re.MULTILINE):
+                    if re.search(p, tail_lines, re.MULTILINE):
                         waiting_match = p
                         break
 
@@ -124,10 +126,10 @@ def run_tool(tool_cmd, config):
                         sys.stderr.write(f"[DEBUG] State: WAITING (matched: {waiting_match})\n")
                     update_state("waiting")
                 else:
-                    # Check thinking patterns (only if not waiting)
+                    # Check thinking patterns on entire buffer - thinking indicators can appear anywhere
                     thinking_match = None
                     for p in config.get("patterns", {}).get("thinking", []):
-                        if re.search(p, recent_text, re.MULTILINE):
+                        if re.search(p, full_buffer, re.MULTILINE):
                             thinking_match = p
                             break
 

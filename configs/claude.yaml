@@ -10,7 +10,6 @@ patterns:
     - "Esc to cancel"  # Appears in selection menus
     - "\\d+\\.\\s+(Yes|No)"  # Numbered options like "1. Yes", "2. No"
     - "Type here to tell Claude what to do differently"  # Alternative input option
-    - "shift\\+tab"  # Appears in selection prompts
     - "\\(y/n\\)"
     - "\\[y/N\\]"
     - "\\[Y/n\\]"

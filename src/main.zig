@@ -386,6 +386,37 @@ pub fn main() !void {
     while (true) {
         const poll_result = posix.poll(poll_fds[0..poll_fds_count], 100) catch continue;
 
+        // Check idle timeout ONLY when there's no new data (matches Python: if not rlist)
+        if (poll_result == 0) {
+            const now = std.time.milliTimestamp();
+            const time_since_output = now - last_output_time;
+            const time_in_current_state = now - last_state_change;
+
+            if (logger.file != null and current_state != .idle and time_since_output > 100) {
+                logger.log("[DEBUG] Idle check (no data): state={s}, time_since_output={d}ms (threshold={d}ms), time_in_state={d}ms (min={d}ms)\n", .{
+                    @tagName(current_state),
+                    time_since_output,
+                    config_result.config.idle_threshold_ms,
+                    time_in_current_state,
+                    min_state_duration_ms,
+                });
+            }
+
+            // Only go idle if we're not in waiting state (matches Python behavior)
+            if (current_state != .idle and current_state != .waiting and
+                time_since_output > @as(i64, @intCast(config_result.config.idle_threshold_ms)) and
+                time_in_current_state >= min_state_duration_ms)
+            {
+                logger.log("[DEBUG] Going idle (no data): time_since_output={d}ms > threshold={d}ms\n", .{
+                    time_since_output,
+                    config_result.config.idle_threshold_ms,
+                });
+                current_state = .idle;
+                last_state_change = now;
+                led.setState(current_state, &logger);
+            }
+        }
+
         if (poll_result > 0) {
             // Check for PTY output
             if (poll_fds[0].revents & posix.POLL.IN != 0) {
@@ -402,6 +433,7 @@ pub fn main() !void {
                     rolling_buffer.shrinkRetainingCapacity(1024);
                 }
 
+                // Always update idle timer on ANY output (matches Python behavior)
                 last_output_time = std.time.milliTimestamp();
 
                 // Debug: Log buffer content
@@ -457,34 +489,6 @@ pub fn main() !void {
             // Child has exited
             child_exit_status = child_status;
             break;
-        }
-
-        // Check idle timeout
-        const now = std.time.milliTimestamp();
-        const time_since_output = now - last_output_time;
-        const time_in_current_state = now - last_state_change;
-
-        if (logger.file != null and current_state != .idle and time_since_output > 100) {
-            logger.log("[DEBUG] Idle check: state={s}, time_since_output={d}ms (threshold={d}ms), time_in_state={d}ms (min={d}ms)\n", .{
-                @tagName(current_state),
-                time_since_output,
-                config_result.config.idle_threshold_ms,
-                time_in_current_state,
-                min_state_duration_ms,
-            });
-        }
-
-        if (current_state != .idle and
-            time_since_output > @as(i64, @intCast(config_result.config.idle_threshold_ms)) and
-            time_in_current_state >= min_state_duration_ms)
-        {
-            logger.log("[DEBUG] Going idle: time_since_output={d}ms > threshold={d}ms\n", .{
-                time_since_output,
-                config_result.config.idle_threshold_ms,
-            });
-            current_state = .idle;
-            last_state_change = now;
-            led.setState(current_state, &logger);
         }
     }
 

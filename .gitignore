@@ -42,3 +42,6 @@ Thumbs.db
 
 # Config files (if they contain sensitive data)
 # configs/*.yaml
+
+# Logs
+debug.log

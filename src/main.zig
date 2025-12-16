@@ -33,10 +33,12 @@ const Config = struct {
 
 const LEDController = struct {
     fd: ?posix.fd_t,
+    debug_mode: bool,
 
     fn init() LEDController {
         const fd = posix.open("/dev/ttyACM0", .{ .ACCMODE = .WRONLY }, 0) catch null;
-        return .{ .fd = fd };
+        const debug_env = std.posix.getenv("DEBUG_SL");
+        return .{ .fd = fd, .debug_mode = debug_env != null };
     }
 
     fn deinit(self: *LEDController) void {
@@ -46,18 +48,24 @@ const LEDController = struct {
     }
 
     fn setState(self: *LEDController, state: State) void {
+        // Format matches led script output: "a <r> <g> <b> <gamma>" (4 values)
+        // led script uses: printf "a %03d %03d %03d %03d\n" $r $g $b $gamma
         const cmd = switch (state) {
-            .idle => "a 0 0 255 64\n", // Blue
-            .thinking => "a 255 255 0 64\n", // Yellow
-            .waiting => "a 255 0 0 64\n", // Red
+            .idle => "a 000 000 255 255\n", // Blue: R=0, G=0, B=255, gamma=255
+            .thinking => "a 255 255 000 255\n", // Yellow: R=255, G=255, B=0, gamma=255
+            .waiting => "a 100 000 000 255\n", // Dim Red: R=100, G=0, B=0, gamma=255
         };
+
+        if (self.debug_mode) {
+            std.debug.print("[DEBUG] LED State: {s} -> {s}", .{ @tagName(state), cmd });
+        }
 
         if (self.fd) |fd| {
             _ = posix.write(fd, cmd) catch |err| {
                 std.debug.print("LED write error: {}\n", .{err});
             };
-        } else {
-            // No LED hardware, print to stdout for debugging
+        } else if (!self.debug_mode) {
+            // No LED hardware, print to stdout for debugging (unless already in debug mode)
             std.debug.print("{s}", .{cmd});
         }
     }
@@ -109,8 +117,10 @@ const PatternMatcher = struct {
     waiting_patterns: []CompiledPattern,
     thinking_patterns: []CompiledPattern,
     allocator: std.mem.Allocator,
+    debug_mode: bool,
 
     fn init(allocator: std.mem.Allocator, config: Config) !PatternMatcher {
+        const debug_env = std.posix.getenv("DEBUG_SL");
         var waiting = try allocator.alloc(CompiledPattern, config.patterns.waiting.len);
         errdefer allocator.free(waiting);
 
@@ -133,6 +143,7 @@ const PatternMatcher = struct {
             .waiting_patterns = waiting,
             .thinking_patterns = thinking,
             .allocator = allocator,
+            .debug_mode = debug_env != null,
         };
     }
 
@@ -147,6 +158,9 @@ const PatternMatcher = struct {
         // Check waiting patterns first (higher priority)
         for (self.waiting_patterns) |*pattern| {
             if (try pattern.matches(text)) {
+                if (self.debug_mode) {
+                    std.debug.print("[DEBUG] State: WAITING (matched: {s})\n", .{pattern.pattern});
+                }
                 return .waiting;
             }
         }
@@ -154,6 +168,9 @@ const PatternMatcher = struct {
         // Check thinking patterns
         for (self.thinking_patterns) |*pattern| {
             if (try pattern.matches(text)) {
+                if (self.debug_mode) {
+                    std.debug.print("[DEBUG] State: THINKING (matched: {s})\n", .{pattern.pattern});
+                }
                 return .thinking;
             }
         }
@@ -361,6 +378,28 @@ pub fn main() !void {
                 }
 
                 last_output_time = std.time.milliTimestamp();
+
+                // Debug: Log buffer content
+                if (matcher.debug_mode) {
+                    const text = rolling_buffer.items;
+                    // Show last 200 bytes of buffer for debugging
+                    const start_idx = if (text.len > 200) text.len - 200 else 0;
+                    std.debug.print("\n[DEBUG] Buffer (last {d} bytes): ", .{text.len - start_idx});
+                    for (text[start_idx..]) |ch| {
+                        if (ch >= 32 and ch <= 126) {
+                            std.debug.print("{c}", .{ch});
+                        } else if (ch == '\n') {
+                            std.debug.print("\\n", .{});
+                        } else if (ch == '\r') {
+                            std.debug.print("\\r", .{});
+                        } else if (ch == '\t') {
+                            std.debug.print("\\t", .{});
+                        } else {
+                            std.debug.print("\\x{x:0>2}", .{ch});
+                        }
+                    }
+                    std.debug.print("\n", .{});
+                }
 
                 // Pattern matching
                 const text = rolling_buffer.items;

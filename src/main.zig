@@ -271,14 +271,16 @@ pub fn main() !void {
     defer posix.close(pty.master);
     defer posix.close(pty.slave);
 
-    // Make stdin raw for proper terminal handling
+    // Make stdin raw for proper terminal handling (only if stdin is a TTY)
     var original_termios: c.termios = undefined;
-    _ = c.tcgetattr(posix.STDIN_FILENO, &original_termios);
+    const stdin_is_tty = c.isatty(posix.STDIN_FILENO) == 1;
 
-    var raw_termios = original_termios;
-    c.cfmakeraw(&raw_termios);
-    _ = c.tcsetattr(posix.STDIN_FILENO, c.TCSANOW, &raw_termios);
-    defer _ = c.tcsetattr(posix.STDIN_FILENO, c.TCSANOW, &original_termios);
+    if (stdin_is_tty) {
+        _ = c.tcgetattr(posix.STDIN_FILENO, &original_termios);
+        var raw_termios = original_termios;
+        c.cfmakeraw(&raw_termios);
+        _ = c.tcsetattr(posix.STDIN_FILENO, c.TCSANOW, &raw_termios);
+    }
 
     // Fork child process
     const pid = try posix.fork();
@@ -310,7 +312,7 @@ pub fn main() !void {
         const err = posix.execvpeZ(
             try allocator.dupeZ(u8, child_args[0]),
             @ptrCast(argv.ptr),
-            @ptrCast(&environ),
+            @ptrCast(environ),
         );
 
         std.debug.print("execvpe failed: {}\n", .{err});
@@ -329,15 +331,18 @@ pub fn main() !void {
 
     led.setState(current_state);
 
-    var poll_fds = [_]posix.pollfd{
-        .{ .fd = pty.master, .events = posix.POLL.IN, .revents = 0 },
-        .{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 },
-    };
+    // Setup poll fds - only monitor stdin if it's a TTY
+    var poll_fds: [2]posix.pollfd = undefined;
+    poll_fds[0] = .{ .fd = pty.master, .events = posix.POLL.IN, .revents = 0 };
+    const poll_fds_count: usize = if (stdin_is_tty) blk: {
+        poll_fds[1] = .{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 };
+        break :blk 2;
+    } else 1;
 
     var child_exit_status: ?posix.WaitPidResult = null;
 
     while (true) {
-        const poll_result = posix.poll(&poll_fds, 100) catch continue;
+        const poll_result = posix.poll(poll_fds[0..poll_fds_count], 100) catch continue;
 
         if (poll_result > 0) {
             // Check for PTY output
@@ -369,8 +374,8 @@ pub fn main() !void {
                 }
             }
 
-            // Check for stdin input
-            if (poll_fds[1].revents & posix.POLL.IN != 0) {
+            // Check for stdin input (only if stdin is a TTY)
+            if (stdin_is_tty and poll_fds[1].revents & posix.POLL.IN != 0) {
                 const n = posix.read(posix.STDIN_FILENO, &buffer) catch break;
                 if (n == 0) break;
                 _ = posix.write(pty.master, buffer[0..n]) catch {};
@@ -408,6 +413,11 @@ pub fn main() !void {
 
     // Turn off LED when done
     led.setState(.idle);
+
+    // Restore terminal before exiting (only if we set it to raw mode)
+    if (stdin_is_tty) {
+        _ = c.tcsetattr(posix.STDIN_FILENO, c.TCSANOW, &original_termios);
+    }
 
     process.exit(exit_code);
 }

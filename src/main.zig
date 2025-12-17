@@ -86,6 +86,17 @@ const LEDController = struct {
             };
         }
     }
+
+    fn turnOff(self: *LEDController, logger: *const DebugLogger) void {
+        const cmd = "o\n"; // Turn off command
+        logger.log("[DEBUG] LED: turning off\n", .{});
+
+        if (self.fd) |fd| {
+            _ = posix.write(fd, cmd) catch |err| {
+                logger.log("LED write error: {}\n", .{err});
+            };
+        }
+    }
 };
 
 const CompiledPattern = struct {
@@ -403,13 +414,20 @@ pub fn main() !void {
             }
 
             // Only go idle if we're not in waiting state (matches Python behavior)
+            // Use longer timeout for thinking state to avoid flickering (thinking->idle needs 2x threshold)
+            const idle_threshold = if (current_state == .thinking)
+                config_result.config.idle_threshold_ms * 2
+            else
+                config_result.config.idle_threshold_ms;
+
             if (current_state != .idle and current_state != .waiting and
-                time_since_output > @as(i64, @intCast(config_result.config.idle_threshold_ms)) and
+                time_since_output > @as(i64, @intCast(idle_threshold)) and
                 time_in_current_state >= min_state_duration_ms)
             {
-                logger.log("[DEBUG] Going idle (no data): time_since_output={d}ms > threshold={d}ms\n", .{
+                logger.log("[DEBUG] Going idle (no data): time_since_output={d}ms > threshold={d}ms (state={s})\n", .{
                     time_since_output,
-                    config_result.config.idle_threshold_ms,
+                    idle_threshold,
+                    @tagName(current_state),
                 });
                 current_state = .idle;
                 last_state_change = now;
@@ -436,37 +454,36 @@ pub fn main() !void {
                 // Always update idle timer on ANY output (matches Python behavior)
                 last_output_time = std.time.milliTimestamp();
 
-                // Debug: Log buffer content
-                if (logger.file != null) {
-                    const text = rolling_buffer.items;
-                    // Show last 200 bytes of buffer for debugging
-                    const start_idx = if (text.len > 200) text.len - 200 else 0;
-                    logger.log("\n[DEBUG] Buffer (last {d} bytes): ", .{text.len - start_idx});
-                    for (text[start_idx..]) |ch| {
-                        if (ch >= 32 and ch <= 126) {
-                            logger.log("{c}", .{ch});
-                        } else if (ch == '\n') {
-                            logger.log("\\n", .{});
-                        } else if (ch == '\r') {
-                            logger.log("\\r", .{});
-                        } else if (ch == '\t') {
-                            logger.log("\\t", .{});
-                        } else {
-                            logger.log("\\x{x:0>2}", .{ch});
-                        }
-                    }
-                    logger.log("\n", .{});
-                }
+                // Debug: Log buffer content (disabled to reduce log size)
+                // Uncomment if needed for debugging
+                //if (logger.file != null) {
+                //    const text = rolling_buffer.items;
+                //    logger.log("\n[DEBUG] Buffer: {s}\n", .{text[0..@min(100, text.len)]});
+                //}
 
                 // Pattern matching
                 const text = rolling_buffer.items;
                 if (try matcher.matchState(text, &logger)) |new_state| {
                     const now = std.time.milliTimestamp();
                     if (new_state != current_state and (now - last_state_change) >= min_state_duration_ms) {
+                        logger.log("[DEBUG] State change: {s} -> {s} (time_in_state={d}ms)\n", .{
+                            @tagName(current_state),
+                            @tagName(new_state),
+                            now - last_state_change,
+                        });
                         current_state = new_state;
                         last_state_change = now;
                         led.setState(current_state, &logger);
+                    } else if (new_state != current_state) {
+                        logger.log("[DEBUG] State change blocked: {s} -> {s} (time_in_state={d}ms < min={d}ms)\n", .{
+                            @tagName(current_state),
+                            @tagName(new_state),
+                            now - last_state_change,
+                            min_state_duration_ms,
+                        });
                     }
+                } else {
+                    logger.log("[DEBUG] No pattern match in buffer\n", .{});
                 }
             }
 
@@ -496,8 +513,8 @@ pub fn main() !void {
     const result = child_exit_status orelse posix.waitpid(pid, 0);
     const exit_code = posix.W.EXITSTATUS(result.status);
 
-    // Turn off LED when done
-    led.setState(.idle, &logger);
+    // Turn off LED when done (matches Python: subprocess.run([LED_SCRIPT, "o"]))
+    led.turnOff(&logger);
 
     // Restore terminal before exiting (only if we set it to raw mode)
     if (stdin_is_tty) {

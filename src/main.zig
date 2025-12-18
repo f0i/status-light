@@ -8,7 +8,6 @@ const c = @cImport({
     @cInclude("sys/ioctl.h");
     @cInclude("termios.h");
     @cInclude("pty.h");
-    @cInclude("regex.h");
     @cInclude("unistd.h");
     @cInclude("stdlib.h");
 });
@@ -56,69 +55,52 @@ const DebugLogger = struct {
 };
 
 const LEDController = struct {
-    led_script_path: []const u8,
+    fd: ?posix.fd_t,
 
-    fn init(allocator: std.mem.Allocator) !LEDController {
-        // Get path to led script in current working directory
-        const cwd = fs.cwd();
-        const led_path = try cwd.realpathAlloc(allocator, "led");
-
-        return .{ .led_script_path = led_path };
+    fn init() LEDController {
+        const fd = posix.open("/dev/ttyACM0", .{ .ACCMODE = .WRONLY }, 0) catch null;
+        return .{ .fd = fd };
     }
 
-    fn deinit(self: *LEDController, allocator: std.mem.Allocator) void {
-        allocator.free(self.led_script_path);
+    fn deinit(self: *LEDController) void {
+        if (self.fd) |fd| {
+            posix.close(fd);
+        }
     }
 
     fn setState(self: *LEDController, state: State, logger: *const DebugLogger) void {
-        // Match Python version: subprocess.run([LED_SCRIPT] + args)
-        // idle: ["a", "0", "0", "0", "255"]
-        // thinking: ["a", "0", "255", "255", "0"]
-        // waiting: ["a", "0", "100", "0", "0"]
-        const args = switch (state) {
-            .idle => &[_][]const u8{ self.led_script_path, "a", "0", "0", "0", "255" },
-            .thinking => &[_][]const u8{ self.led_script_path, "a", "0", "255", "255", "0" },
-            .waiting => &[_][]const u8{ self.led_script_path, "a", "0", "100", "0", "0" },
+        // Match Python version: write directly to serial
+        // idle: blue "a 000 000 000 255"
+        // thinking: yellow "a 000 255 255 000"
+        // waiting: red "a 000 255 000 000"
+        const cmd = switch (state) {
+            .idle => "a 000 000 000 255\n",
+            .thinking => "a 000 255 255 000\n",
+            .waiting => "a 000 255 000 000\n",
         };
 
-        logger.log("[DEBUG] LED State: {s} -> ./led {s} {s} {s} {s} {s}\n", .{
-            @tagName(state), args[1], args[2], args[3], args[4], args[5]
-        });
+        logger.log("[DEBUG] LED State: {s} -> {s}", .{ @tagName(state), cmd });
 
-        // Spawn and detach - don't wait for LED script to finish
-        var child = std.process.Child.init(args, std.heap.page_allocator);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-        _ = child.spawn() catch |err| {
-            logger.log("LED spawn error: {}\n", .{err});
-            return;
-        };
-        // Don't wait - let it run async
+        if (self.fd) |fd| {
+            _ = posix.write(fd, cmd) catch |err| {
+                logger.log("LED write error: {}\n", .{err});
+            };
+        }
     }
 
     fn turnOff(self: *LEDController, logger: *const DebugLogger) void {
-        const args = &[_][]const u8{ self.led_script_path, "o" };
+        const cmd = "o\n"; // Turn off command
         logger.log("[DEBUG] LED: turning off\n", .{});
 
-        var child = std.process.Child.init(args, std.heap.page_allocator);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-        _ = child.spawn() catch |err| {
-            logger.log("LED spawn error: {}\n", .{err});
-            return;
-        };
-        _ = child.wait() catch |err| {
-            logger.log("LED wait error: {}\n", .{err});
-        };
+        if (self.fd) |fd| {
+            _ = posix.write(fd, cmd) catch |err| {
+                logger.log("LED write error: {}\n", .{err});
+            };
+        }
     }
 };
 
 const CompiledPattern = struct {
-    // Use byte array as storage for opaque regex_t
-    // regex_t is typically around 32-64 bytes on most platforms
-    regex_storage: [512]u8 align(@alignOf(c_longlong)),
     pattern: []const u8,
     allocator: std.mem.Allocator,
 
@@ -126,30 +108,14 @@ const CompiledPattern = struct {
         var self: CompiledPattern = undefined;
         self.allocator = allocator;
         self.pattern = try allocator.dupe(u8, pattern);
-        errdefer allocator.free(self.pattern);
-
-        const c_pattern = try allocator.dupeZ(u8, pattern);
-        defer allocator.free(c_pattern);
-
-        const regex_ptr: *c.regex_t = @ptrCast(@alignCast(&self.regex_storage));
-        const result = c.regcomp(regex_ptr, c_pattern, c.REG_EXTENDED | c.REG_NOSUB);
-        if (result != 0) {
-            allocator.free(self.pattern);
-            return error.RegexCompileError;
-        }
-
         return self;
     }
 
     fn deinit(self: *CompiledPattern) void {
-        const regex_ptr: *c.regex_t = @ptrCast(@alignCast(&self.regex_storage));
-        c.regfree(regex_ptr);
         self.allocator.free(self.pattern);
     }
 
     fn matches(self: *const CompiledPattern, text: []const u8) !bool {
-        // Use simple substring matching instead of regex
-        // Our patterns are all literal strings anyway, not complex regexes
         return std.mem.indexOf(u8, text, self.pattern) != null;
     }
 };
@@ -331,33 +297,11 @@ pub fn main() !void {
     }
 
     const tool_name = fs.path.basename(args[1]);
-    var config_result = try loadConfig(allocator, tool_name);
-    defer config_result.deinit();
-
-    var logger = DebugLogger.init();
-    defer logger.deinit();
-
-    var matcher = try PatternMatcher.init(allocator, config_result.config);
-    defer matcher.deinit();
-
-    var led = try LEDController.init(allocator);
-    defer led.deinit(allocator);
 
     // Open PTY
     const pty = try openPty();
     defer posix.close(pty.master);
     defer posix.close(pty.slave);
-
-    // Make stdin raw for proper terminal handling (only if stdin is a TTY)
-    var original_termios: c.termios = undefined;
-    const stdin_is_tty = c.isatty(posix.STDIN_FILENO) == 1;
-
-    if (stdin_is_tty) {
-        _ = c.tcgetattr(posix.STDIN_FILENO, &original_termios);
-        var raw_termios = original_termios;
-        c.cfmakeraw(&raw_termios);
-        _ = c.tcsetattr(posix.STDIN_FILENO, c.TCSANOW, &raw_termios);
-    }
 
     // Fork child process
     const pid = try posix.fork();
@@ -410,8 +354,24 @@ pub fn main() !void {
     var last_output_time = std.time.milliTimestamp();
     var last_state_change = std.time.milliTimestamp();
     var last_thinking_pattern_time = std.time.milliTimestamp();
-    const min_state_duration_ms = 200;
+    const min_state_duration_ms = 0;
     const output_silence_threshold_ms = 400; // Consider output "stopped" after 400ms of silence
+
+    var led = LEDController.init();
+    defer led.deinit();
+    var logger = DebugLogger.init();
+    defer logger.deinit();
+
+    // Make stdin raw for proper terminal handling (only if stdin is a TTY)
+    var original_termios: c.termios = undefined;
+    const stdin_is_tty = c.isatty(posix.STDIN_FILENO) == 1;
+
+    if (stdin_is_tty) {
+        _ = c.tcgetattr(posix.STDIN_FILENO, &original_termios);
+        var raw_termios = original_termios;
+        c.cfmakeraw(&raw_termios);
+        _ = c.tcsetattr(posix.STDIN_FILENO, c.TCSANOW, &raw_termios);
+    }
 
     led.setState(current_state, &logger);
     logger.log("[DEBUG] Starting with timing-first approach: silence_threshold={d}ms\n", .{output_silence_threshold_ms});
@@ -521,7 +481,9 @@ pub fn main() !void {
                 // Check if this output contains thinking patterns
                 var found_thinking = false;
                 const text = buffer[0..n];
+                logger.log("[DEBUG] Text to match: {s}\n", .{text});
                 for (matcher.thinking_patterns) |*pattern| {
+                    logger.log("[DEBUG] Pattern: {s}\n", .{pattern.pattern});
                     if (try pattern.matches(text)) {
                         found_thinking = true;
                         last_thinking_pattern_time = now;
@@ -529,6 +491,7 @@ pub fn main() !void {
                         break;
                     }
                 }
+                logger.log("[DEBUG] Checking thinking patterns: found={}\n", .{found_thinking});
 
                 // Only go to thinking if we found a thinking pattern
                 if (found_thinking and current_state != .thinking) {
@@ -606,7 +569,7 @@ pub fn main() !void {
 
     // Restore terminal before exiting (only if we set it to raw mode)
     if (stdin_is_tty) {
-        _ = c.tcsetattr(posix.STDIN_FILENO, c.TCSANOW, &original_termios);
+        _ = c.tcsetattr(posix.STDIN_FILENO, c.TCSADRAIN, &original_termios);
     }
 
     process.exit(exit_code);

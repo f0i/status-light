@@ -15,20 +15,8 @@
       "Are you sure"
     ],
     "thinking": [
-      "esc.*to interrupt",
-      "[✶✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆❇❈❉❊❋]",
-      "●",
-      "\\x1b\\[96m●\\x1b\\[39m",
-      "\\x1b\\[97m●\\x1b\\[39m",
-      "\\x1b\\[37m●\\x1b\\[39m",
-      "Germinating",
-      "Thought for \\d+s",
-      "ctrl\\+o to expand",
-      "ctrl\\+o to show thinking",
-      "⎿",
-      "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]",
-      "I'll help",
-      "Let me"
+      "·",
+      "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]"
     ]
   },
   "idle_threshold_ms": 300

@@ -411,7 +411,7 @@ pub fn main() !void {
     var last_state_change = std.time.milliTimestamp();
     var last_thinking_pattern_time = std.time.milliTimestamp();
     const min_state_duration_ms = 200;
-    const output_silence_threshold_ms = 2000; // Consider output "stopped" after 2s of silence
+    const output_silence_threshold_ms = 400; // Consider output "stopped" after 400ms of silence
 
     led.setState(current_state, &logger);
     logger.log("[DEBUG] Starting with timing-first approach: silence_threshold={d}ms\n", .{output_silence_threshold_ms});

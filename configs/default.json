@@ -21,6 +21,10 @@
       "\\[Y/n\\]"
     ],
     "thinking": [
+      "Imagining",
+      "imagining",
+      "esc.*to interrupt",
+      "Thought for \\d+s",
       "build",
       "Build",
       "BUILD",

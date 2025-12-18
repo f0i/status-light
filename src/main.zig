@@ -56,46 +56,62 @@ const DebugLogger = struct {
 };
 
 const LEDController = struct {
-    fd: ?posix.fd_t,
+    led_script_path: []const u8,
 
-    fn init() LEDController {
-        const fd = posix.open("/dev/ttyACM0", .{ .ACCMODE = .WRONLY }, 0) catch null;
-        return .{ .fd = fd };
+    fn init(allocator: std.mem.Allocator) !LEDController {
+        // Get path to led script in current working directory
+        const cwd = fs.cwd();
+        const led_path = try cwd.realpathAlloc(allocator, "led");
+
+        return .{ .led_script_path = led_path };
     }
 
-    fn deinit(self: *LEDController) void {
-        if (self.fd) |fd| {
-            posix.close(fd);
-        }
+    fn deinit(self: *LEDController, allocator: std.mem.Allocator) void {
+        allocator.free(self.led_script_path);
     }
 
     fn setState(self: *LEDController, state: State, logger: *const DebugLogger) void {
-        // Format matches led script output: "a <r> <g> <b> <gamma>" (4 values)
-        // led script uses: printf "a %03d %03d %03d %03d\n" $r $g $b $gamma
-        const cmd = switch (state) {
-            .idle => "a 000 000 255 255\n", // Blue: R=0, G=0, B=255, gamma=255
-            .thinking => "a 255 255 000 255\n", // Yellow: R=255, G=255, B=0, gamma=255
-            .waiting => "a 100 000 000 255\n", // Dim Red: R=100, G=0, B=0, gamma=255
+        // Match Python version: subprocess.run([LED_SCRIPT] + args)
+        // idle: ["a", "0", "0", "0", "255"]
+        // thinking: ["a", "0", "255", "255", "0"]
+        // waiting: ["a", "0", "100", "0", "0"]
+        const args = switch (state) {
+            .idle => &[_][]const u8{ self.led_script_path, "a", "0", "0", "0", "255" },
+            .thinking => &[_][]const u8{ self.led_script_path, "a", "0", "255", "255", "0" },
+            .waiting => &[_][]const u8{ self.led_script_path, "a", "0", "100", "0", "0" },
         };
 
-        logger.log("[DEBUG] LED State: {s} -> {s}", .{ @tagName(state), cmd });
+        logger.log("[DEBUG] LED State: {s} -> ./led {s} {s} {s} {s} {s}\n", .{
+            @tagName(state), args[1], args[2], args[3], args[4], args[5]
+        });
 
-        if (self.fd) |fd| {
-            _ = posix.write(fd, cmd) catch |err| {
-                logger.log("LED write error: {}\n", .{err});
-            };
-        }
+        // Spawn and detach - don't wait for LED script to finish
+        var child = std.process.Child.init(args, std.heap.page_allocator);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+        _ = child.spawn() catch |err| {
+            logger.log("LED spawn error: {}\n", .{err});
+            return;
+        };
+        // Don't wait - let it run async
     }
 
     fn turnOff(self: *LEDController, logger: *const DebugLogger) void {
-        const cmd = "o\n"; // Turn off command
+        const args = &[_][]const u8{ self.led_script_path, "o" };
         logger.log("[DEBUG] LED: turning off\n", .{});
 
-        if (self.fd) |fd| {
-            _ = posix.write(fd, cmd) catch |err| {
-                logger.log("LED write error: {}\n", .{err});
-            };
-        }
+        var child = std.process.Child.init(args, std.heap.page_allocator);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+        _ = child.spawn() catch |err| {
+            logger.log("LED spawn error: {}\n", .{err});
+            return;
+        };
+        _ = child.wait() catch |err| {
+            logger.log("LED wait error: {}\n", .{err});
+        };
     }
 };
 
@@ -132,12 +148,9 @@ const CompiledPattern = struct {
     }
 
     fn matches(self: *const CompiledPattern, text: []const u8) !bool {
-        const c_text = try self.allocator.dupeZ(u8, text);
-        defer self.allocator.free(c_text);
-
-        const regex_ptr: *const c.regex_t = @ptrCast(@alignCast(&self.regex_storage));
-        const result = c.regexec(regex_ptr, c_text, 0, null, 0);
-        return result == 0;
+        // Use simple substring matching instead of regex
+        // Our patterns are all literal strings anyway, not complex regexes
+        return std.mem.indexOf(u8, text, self.pattern) != null;
     }
 };
 
@@ -201,8 +214,17 @@ const PatternMatcher = struct {
         }
 
         // Check thinking patterns on full buffer - thinking indicators can appear anywhere
+        const has_imagining_check = std.mem.indexOf(u8, full_buffer, "Imagining") != null;
+
         for (self.thinking_patterns) |*pattern| {
-            if (try pattern.matches(full_buffer)) {
+            const matched = try pattern.matches(full_buffer);
+
+            // Debug when we have "Imagining" in buffer
+            if (has_imagining_check) {
+                logger.log("[DEBUG] Checking thinking pattern '{s}': matched={}\n", .{ pattern.pattern, matched });
+            }
+
+            if (matched) {
                 logger.log("[DEBUG] State: THINKING (matched: {s} in full buffer)\n", .{pattern.pattern});
                 return .thinking;
             }
@@ -258,6 +280,8 @@ fn loadConfig(allocator: std.mem.Allocator, tool_name: []const u8) !ConfigResult
                     "Build",
                     "running",
                     "Running",
+                    "imagining",
+                    "Imagining",
                 },
             },
             .idle_threshold_ms = 500,
@@ -316,8 +340,8 @@ pub fn main() !void {
     var matcher = try PatternMatcher.init(allocator, config_result.config);
     defer matcher.deinit();
 
-    var led = LEDController.init();
-    defer led.deinit();
+    var led = try LEDController.init(allocator);
+    defer led.deinit(allocator);
 
     // Open PTY
     const pty = try openPty();
@@ -350,39 +374,47 @@ pub fn main() !void {
         posix.close(pty.master);
         posix.close(pty.slave);
 
-        const child_args = args[1..];
+        // We need to create null-terminated versions of the arguments
+        var argv_ptrs = try allocator.alloc(?[*:0]u8, args[1..].len + 1);
+        defer allocator.free(argv_ptrs);
 
-        // Build null-terminated argument array for exec
-        var argv = try allocator.alloc(?[*:0]const u8, child_args.len + 1);
-        defer allocator.free(argv);
-
-        for (child_args, 0..) |arg, i| {
-            argv[i] = (try allocator.dupeZ(u8, arg)).ptr;
+        for (args[1..], 0..) |arg, i| {
+            argv_ptrs[i] = try allocator.dupeZ(u8, arg);
         }
-        argv[child_args.len] = null;
+        argv_ptrs[args[1..].len] = null;
 
-        // Use execvp which searches PATH and uses current environment
-        const err = posix.execvpeZ(
-            try allocator.dupeZ(u8, child_args[0]),
-            @ptrCast(argv.ptr),
+        posix.execvpeZ(
+            argv_ptrs[0].?,
+            @as([*:null]const ?[*:0]const u8, @ptrCast(argv_ptrs.ptr)),
             @ptrCast(environ),
-        );
-
-        std.debug.print("execvpe failed: {}\n", .{err});
-        process.exit(1);
+        ) catch {
+            _ = c.write(posix.STDERR_FILENO, "Child process failed to exec\n", 29);
+            process.exit(1);
+        };
     }
 
     // Parent process - monitor PTY
     var buffer: [1024]u8 = undefined;
-    var rolling_buffer = std.ArrayList(u8).init(allocator);
-    defer rolling_buffer.deinit();
+
+    // Line-based buffer: keep last ~100 lines, max 50KB total
+    var line_buffer = std.ArrayList([]const u8).init(allocator);
+    defer {
+        for (line_buffer.items) |line| allocator.free(line);
+        line_buffer.deinit();
+    }
+    var total_buffer_bytes: usize = 0;
+    const max_buffer_bytes: usize = 50 * 1024;
+    const max_lines: usize = 100;
 
     var current_state: State = .idle;
     var last_output_time = std.time.milliTimestamp();
     var last_state_change = std.time.milliTimestamp();
+    var last_thinking_pattern_time = std.time.milliTimestamp();
     const min_state_duration_ms = 200;
+    const output_silence_threshold_ms = 2000; // Consider output "stopped" after 2s of silence
 
     led.setState(current_state, &logger);
+    logger.log("[DEBUG] Starting with timing-first approach: silence_threshold={d}ms\n", .{output_silence_threshold_ms});
 
     // Setup poll fds - only monitor stdin if it's a TTY
     var poll_fds: [2]posix.pollfd = undefined;
@@ -397,41 +429,45 @@ pub fn main() !void {
     while (true) {
         const poll_result = posix.poll(poll_fds[0..poll_fds_count], 100) catch continue;
 
-        // Check idle timeout ONLY when there's no new data (matches Python: if not rlist)
+        // TIMING-FIRST: When no new data, check if we should change state based on silence
         if (poll_result == 0) {
             const now = std.time.milliTimestamp();
             const time_since_output = now - last_output_time;
             const time_in_current_state = now - last_state_change;
 
-            if (logger.file != null and current_state != .idle and time_since_output > 100) {
-                logger.log("[DEBUG] Idle check (no data): state={s}, time_since_output={d}ms (threshold={d}ms), time_in_state={d}ms (min={d}ms)\n", .{
-                    @tagName(current_state),
-                    time_since_output,
-                    config_result.config.idle_threshold_ms,
-                    time_in_current_state,
-                    min_state_duration_ms,
-                });
-            }
+            // If output has been silent for > threshold, check patterns
+            if (time_since_output > output_silence_threshold_ms and time_in_current_state >= min_state_duration_ms) {
+                logger.log("[DEBUG] Silence detected: {d}ms since last output (threshold={d}ms)\n", .{ time_since_output, output_silence_threshold_ms });
+                // Check last 20 lines for waiting patterns
+                const check_line_count = @min(20, line_buffer.items.len);
+                var found_waiting = false;
 
-            // Only go idle if we're not in waiting state (matches Python behavior)
-            // Use longer timeout for thinking state to avoid flickering (thinking->idle needs 2x threshold)
-            const idle_threshold = if (current_state == .thinking)
-                config_result.config.idle_threshold_ms * 2
-            else
-                config_result.config.idle_threshold_ms;
+                if (check_line_count > 0) {
+                    const start_idx = line_buffer.items.len - check_line_count;
+                    for (line_buffer.items[start_idx..]) |line| {
+                        for (matcher.waiting_patterns) |*pattern| {
+                            if (try pattern.matches(line)) {
+                                found_waiting = true;
+                                logger.log("[DEBUG] Silence > {d}ms: Found waiting pattern '{s}' in recent lines\n", .{ time_since_output, pattern.pattern });
+                                break;
+                            }
+                        }
+                        if (found_waiting) break;
+                    }
+                }
 
-            if (current_state != .idle and current_state != .waiting and
-                time_since_output > @as(i64, @intCast(idle_threshold)) and
-                time_in_current_state >= min_state_duration_ms)
-            {
-                logger.log("[DEBUG] Going idle (no data): time_since_output={d}ms > threshold={d}ms (state={s})\n", .{
-                    time_since_output,
-                    idle_threshold,
-                    @tagName(current_state),
-                });
-                current_state = .idle;
-                last_state_change = now;
-                led.setState(current_state, &logger);
+                const new_state: State = if (found_waiting) .waiting else .idle;
+
+                if (new_state != current_state) {
+                    logger.log("[DEBUG] State change (silence): {s} -> {s} (silence={d}ms)\n", .{
+                        @tagName(current_state),
+                        @tagName(new_state),
+                        time_since_output,
+                    });
+                    current_state = new_state;
+                    last_state_change = now;
+                    led.setState(current_state, &logger);
+                }
             }
         }
 
@@ -443,47 +479,99 @@ pub fn main() !void {
 
                 _ = posix.write(posix.STDOUT_FILENO, buffer[0..n]) catch {};
 
-                // Update rolling buffer (keep last 1KB)
-                try rolling_buffer.appendSlice(buffer[0..n]);
-                if (rolling_buffer.items.len > 1024) {
-                    const excess = rolling_buffer.items.len - 1024;
-                    std.mem.copyForwards(u8, rolling_buffer.items, rolling_buffer.items[excess..]);
-                    rolling_buffer.shrinkRetainingCapacity(1024);
+                // Add output to line buffer
+                const data = buffer[0..n];
+                var line_start: usize = 0;
+                for (data, 0..) |byte, i| {
+                    if (byte == '\n') {
+                        const line = try allocator.dupe(u8, data[line_start .. i + 1]);
+                        try line_buffer.append(line);
+                        total_buffer_bytes += line.len;
+                        line_start = i + 1;
+
+                        // Trim old lines if we exceed limits
+                        while (line_buffer.items.len > max_lines or total_buffer_bytes > max_buffer_bytes) {
+                            const old_line = line_buffer.orderedRemove(0);
+                            total_buffer_bytes -= old_line.len;
+                            allocator.free(old_line);
+                        }
+                    }
+                }
+                // Handle partial line at end
+                if (line_start < data.len) {
+                    const partial = try allocator.dupe(u8, data[line_start..]);
+                    try line_buffer.append(partial);
+                    total_buffer_bytes += partial.len;
                 }
 
-                // Always update idle timer on ANY output (matches Python behavior)
-                last_output_time = std.time.milliTimestamp();
+                // Update last output time
+                const now = std.time.milliTimestamp();
+                const time_since_last = now - last_output_time;
+                const time_since_start = now - last_state_change;
+                last_output_time = now;
 
-                // Debug: Log buffer content (disabled to reduce log size)
-                // Uncomment if needed for debugging
-                //if (logger.file != null) {
-                //    const text = rolling_buffer.items;
-                //    logger.log("\n[DEBUG] Buffer: {s}\n", .{text[0..@min(100, text.len)]});
-                //}
+                // Debug: log ALL output with timing to understand when it arrives
+                logger.log("[DEBUG] OUTPUT: {d} bytes at +{d}ms (gap={d}ms, state={s})\n", .{
+                    n,
+                    time_since_start,
+                    time_since_last,
+                    @tagName(current_state),
+                });
 
-                // Pattern matching
-                const text = rolling_buffer.items;
-                if (try matcher.matchState(text, &logger)) |new_state| {
-                    const now = std.time.milliTimestamp();
-                    if (new_state != current_state and (now - last_state_change) >= min_state_duration_ms) {
-                        logger.log("[DEBUG] State change: {s} -> {s} (time_in_state={d}ms)\n", .{
-                            @tagName(current_state),
-                            @tagName(new_state),
-                            now - last_state_change,
-                        });
+                // Check if this output contains thinking patterns
+                var found_thinking = false;
+                const text = buffer[0..n];
+                for (matcher.thinking_patterns) |*pattern| {
+                    if (try pattern.matches(text)) {
+                        found_thinking = true;
+                        last_thinking_pattern_time = now;
+                        logger.log("[DEBUG] Thinking pattern matched: {s}\n", .{pattern.pattern});
+                        break;
+                    }
+                }
+
+                // Only go to thinking if we found a thinking pattern
+                if (found_thinking and current_state != .thinking) {
+                    const time_in_state = now - last_state_change;
+                    if (time_in_state >= min_state_duration_ms) {
+                        logger.log("[DEBUG] State change (thinking pattern found): {s} -> thinking\n", .{@tagName(current_state)});
+                        current_state = .thinking;
+                        last_state_change = now;
+                        led.setState(current_state, &logger);
+                    }
+                }
+
+                // If we're thinking but haven't seen a thinking pattern in a while, go back to idle/waiting
+                if (current_state == .thinking and !found_thinking) {
+                    const time_since_thinking_pattern = now - last_thinking_pattern_time;
+                    const time_in_state = now - last_state_change;
+
+                    if (time_since_thinking_pattern > output_silence_threshold_ms and time_in_state >= min_state_duration_ms) {
+                        logger.log("[DEBUG] No thinking pattern for {d}ms, checking for waiting/idle\n", .{time_since_thinking_pattern});
+
+                        // Check last 20 lines for waiting patterns
+                        const check_line_count = @min(20, line_buffer.items.len);
+                        var found_waiting = false;
+
+                        if (check_line_count > 0) {
+                            const start_idx = line_buffer.items.len - check_line_count;
+                            for (line_buffer.items[start_idx..]) |line| {
+                                for (matcher.waiting_patterns) |*pattern| {
+                                    if (try pattern.matches(line)) {
+                                        found_waiting = true;
+                                        break;
+                                    }
+                                }
+                                if (found_waiting) break;
+                            }
+                        }
+
+                        const new_state: State = if (found_waiting) .waiting else .idle;
+                        logger.log("[DEBUG] State change (no thinking pattern): thinking -> {s}\n", .{@tagName(new_state)});
                         current_state = new_state;
                         last_state_change = now;
                         led.setState(current_state, &logger);
-                    } else if (new_state != current_state) {
-                        logger.log("[DEBUG] State change blocked: {s} -> {s} (time_in_state={d}ms < min={d}ms)\n", .{
-                            @tagName(current_state),
-                            @tagName(new_state),
-                            now - last_state_change,
-                            min_state_duration_ms,
-                        });
                     }
-                } else {
-                    logger.log("[DEBUG] No pattern match in buffer\n", .{});
                 }
             }
 
